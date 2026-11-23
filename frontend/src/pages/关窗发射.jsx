@@ -10,10 +10,10 @@ export default function 关窗发射页() {
     <div>
       <h1 className="题">关窗发射（只读）</h1>
       <p className="述">
-        全局口径 <strong>关闭即冻结</strong>：水位越过窗止即在同一关窗事务内物化发射快照。
-        关窗后同窗<strong>准时</strong>事件（处理时 ≤ 关闭处理时）一律拒收、不挂窗键、合计与快照不变；
-        仅显式迟到修正可改现行合计（发射快照仍冻结）。本页只读，核对每扇窗的关闭态、发射快照、
-        现行合计、拒收/续写证据与 valid。
+        全局口径 <strong>关闭即冻结</strong>：水位越过窗止即在同一关窗事务内物化发射快照并同票落冻结戳。
+        关窗后同窗<strong>准时</strong>事件（处理时 ≤ 关闭处理时）先核冻结戳：戳有效一律拒收、不挂窗键、
+        合计与快照不变；缺戳/失配整票拒绝。仅显式迟到修正可改现行合计（发射快照仍冻结）。
+        本页只读，核对每扇窗的关闭态、发射快照、冻结戳、现行合计、拒收/续写证据与 valid。
       </p>
       <div className="行">
         {["", "开启", "已关闭"].map((s) => (
@@ -33,6 +33,13 @@ export default function 关窗发射页() {
                 <span className="码" style={{ fontWeight: 700 }}>{v.窗键}</span>
                 <span className={`徽章 ${v.关闭态 === "已关闭" ? "通" : "败"}`}>{v.关闭态}</span>
                 <span className={`徽章 ${v.valid ? "通" : "败"}`}>{v.valid ? "valid" : "invalid"}</span>
+                {v.已发射 && (v.冻结戳 ? (
+                  <span className={`徽章 ${v.冻结戳.有效 ? "通" : "败"}`} title={v.冻结戳.发射快照哈希}>
+                    冻结戳 {v.冻结戳.戳号.slice(0, 13)}…
+                  </span>
+                ) : (
+                  <span className="徽章 败">缺冻结戳</span>
+                ))}
                 {v.已发射 && <span className="讯" style={{ margin: 0 }}>发射号 #{v.发射号} · {v.发射处理时}</span>}
               </div>
               {v.已发射 ? (
@@ -66,7 +73,7 @@ export default function 关窗发射页() {
               {v.拒收证据.length > 0 && (
                 <div className="报箱 码" style={{ marginTop: "0.4rem" }}>
                   {v.拒收证据.map((r) =>
-                    `拒收 ${r.事件编号}（处理时 ${r.处理时} ≤ 关闭 ${r.关闭处理时}）：${r.原因}`
+                    `拒收 ${r.事件编号}（处理时 ${r.处理时} ≤ 关闭 ${r.关闭处理时}，戳 ${r.戳号 || "无"}）：${r.原因}`
                   ).join("\n")}
                 </div>
               )}

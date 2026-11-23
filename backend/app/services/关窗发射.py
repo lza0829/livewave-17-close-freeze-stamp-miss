@@ -1,3 +1,4 @@
+from app.modules import 发射冻结戳 as 冻
 from app.modules import 准时关窗发射 as 口径模块
 from app.services import 时间
 
@@ -6,18 +7,32 @@ def _拒收证据(conn, 窗键: str) -> list:
     return [
         dict(r)
         for r in conn.execute(
-            "SELECT 编号, 窗键, 事件编号, 事件时, 处理时, 关闭处理时, 原因 "
+            "SELECT 编号, 窗键, 事件编号, 事件时, 处理时, 关闭处理时, 原因, 戳号 "
             "FROM 关窗拒收 WHERE 窗键=? ORDER BY 编号",
             (窗键,),
         ).fetchall()
     ]
 
 
+def _冻结戳视图(戳, 戳问题: list) -> dict | None:
+    if not 戳:
+        return None
+    return {
+        "戳号": 戳["戳号"],
+        "关闭时刻": 戳["关闭时刻"],
+        "发射快照哈希": 戳["发射快照哈希"],
+        "可否准时续写": bool(戳["可否准时续写"]),
+        "有效": not 戳问题,
+        "核证问题": 戳问题,
+    }
+
+
 def 组装发射视图(conn, 窗) -> dict:
-    """单扇窗的关窗发射只读视图。"""
+    """单扇窗的关窗发射只读视图（含冻结戳核证）。"""
     wk = 窗["窗键"]
     发射 = conn.execute("SELECT * FROM 关窗发射 WHERE 窗键=?", (wk,)).fetchone()
     拒收 = _拒收证据(conn, wk)
+    戳, 戳问题 = 冻.核证窗戳(conn, wk)
 
     撤回 = [
         dict(r)
@@ -42,6 +57,7 @@ def 组装发射视图(conn, 窗) -> dict:
         "关闭态": 窗["状态"],
         "关闭处理时": 窗["关闭处理时"],
         "口径": 口径模块.关窗口径,
+        "冻结戳": _冻结戳视图(戳, 戳问题),
         "valid": False,
         "valid问题": [],
     }
@@ -58,8 +74,8 @@ def 组装发射视图(conn, 窗) -> dict:
                 "迟到修正证据": [],
             }
         )
-        视图["valid问题"] = ["窗仍开启，尚无发射结果"] if 发射 else []
-        视图["valid"] = not 发射
+        视图["valid问题"] = (["窗仍开启，尚无发射结果"] if 发射 else []) + 戳问题
+        视图["valid"] = not 发射 and not 戳问题
         return 视图
 
     if not 发射:
@@ -79,7 +95,7 @@ def 组装发射视图(conn, 窗) -> dict:
                 "迟到修正证据": 撤回,
             }
         )
-        视图["valid问题"].append("状态已关闭但缺少关窗发射记录（半截关窗）")
+        视图["valid问题"] = ["状态已关闭但缺少关窗发射记录（半截关窗）"] + 戳问题
         视图["valid"] = False
         return 视图
 
@@ -110,6 +126,7 @@ def 组装发射视图(conn, 窗) -> dict:
     )
 
     问题 = []
+    问题.extend(戳问题)
     if 发射["口径"] != 口径模块.关窗口径:
         问题.append(f"发射口径污染:{发射['口径']}")
     if (事件和["赞"], 事件和["送"], 事件和["n"]) != (

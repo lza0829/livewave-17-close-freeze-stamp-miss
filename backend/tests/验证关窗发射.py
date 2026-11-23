@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -10,9 +11,12 @@ sys.path.insert(0, _BACKEND)
 os.environ["数据目录"] = 临时
 os.environ["夹具目录"] = os.path.join(os.path.dirname(_BACKEND), "fixtures")
 
-from app.db import 连接
+import json
+
+from app.db import 连接, 夹具目录
 from app import seed
 from app.services import 装载, 贯验, 关窗发射 as 发射服务, 热度窗
+from app.modules import 发射冻结戳 as 冻
 from app.modules import 准时关窗发射 as 口径模块
 
 通过数 = 0
@@ -67,10 +71,17 @@ try:
     断言(f1 is not None, "关窗发射记录已物化（可核对发射结果）")
     断言(f1 is not None and f1["快照点赞"] == 3 and f1["快照送礼"] == 50
          and f1["快照笔数"] == 2 and f1["口径"] == "关闭即冻结", "发射快照=关窗瞬间合计且口径=甲")
+    戳1 = conn.execute("SELECT * FROM 发射冻结戳 WHERE 窗键=?", (W1,)).fetchone()
+    断言(戳1 is not None and 戳1["戳号"] != "", "关闭成功同票落冻结戳：戳号非空（禁止关闭成功而戳空）")
+    断言(戳1 is not None and 戳1["关闭时刻"] == w1["关闭处理时"], "冻结戳关闭时刻=窗关闭处理时")
+    断言(戳1 is not None and int(戳1["可否准时续写"]) == 0, "甲口径：戳可否准时续写=0（关闭即冻结）")
+    _, 戳1问题 = 冻.核证窗戳(conn, W1)
+    断言(not 戳1问题, f"落戳即通过核证（窗键↔关闭时刻↔快照哈希↔戳号）（问题:{戳1问题}）")
     视图 = 发射服务.取单窗(conn, W1)
 finally:
     conn.close()
 断言(视图["valid"] is True, f"只读接口 valid=True（问题:{视图['valid问题']}）")
+断言(视图["冻结戳"] is not None and 视图["冻结戳"]["有效"] is True, "发射视图携带有效冻结戳")
 断言(视图["已发射"] and 视图["发射快照"]["点赞"] == 3 and 视图["现行合计"]["点赞合计"] == 3,
       "字段含发射快照/现行合计且关窗时二者相等")
 断言(视图["续写证据"] == [] and 视图["拒收证据"] == [], "甲口径无续写证据（区别于乙口径）")
@@ -95,6 +106,8 @@ conn = 连接()
 try:
     拒收行 = conn.execute("SELECT * FROM 关窗拒收 WHERE 窗键=? ORDER BY 编号", (W1,)).fetchall()
     断言(len(拒收行) == 2, "关窗拒收证据 2 笔可查")
+    戳号W1 = conn.execute("SELECT 戳号 FROM 发射冻结戳 WHERE 窗键=?", (W1,)).fetchone()["戳号"]
+    断言(all(r["戳号"] == 戳号W1 for r in 拒收行), "拒收证据携带本窗冻结戳号（准时写已消化戳）")
     j1 = conn.execute("SELECT * FROM 互动事件 WHERE 事件编号='J1'").fetchone()
     断言(j1["命运"] == "关闭拒收" and j1["窗键"] == "", "拒收事件命运=关闭拒收且不挂窗键")
     视图2 = 发射服务.取单窗(conn, W1)
@@ -126,6 +139,84 @@ finally:
 断言(f1c["快照点赞"] == 3 and f1c["快照笔数"] == 2, "发射快照冻结在关窗瞬间（赞3/笔2），不被修正改写")
 断言(len(视图3["迟到修正证据"]) == 1 and 视图3["valid"] is True,
       "只读接口含迟到修正证据且 valid（快照+修正净增量=现行）")
+
+print("幕3c 夹具：关闭成功后删戳再投同窗准时包 → 甲：整票拒绝、累计不变、贯验抓获缺戳")
+conn = 连接()
+try:
+    存戳 = dict(conn.execute("SELECT * FROM 发射冻结戳 WHERE 窗键=?", (W1,)).fetchone())
+    拒收前 = conn.execute("SELECT COUNT(*) c FROM 关窗拒收 WHERE 窗键=?", (W1,)).fetchone()["c"]
+    批次前 = conn.execute("SELECT COUNT(*) c FROM 装载批次").fetchone()["c"]
+    conn.execute("DELETE FROM 发射冻结戳 WHERE 窗键=?", (W1,))  # 夹具动作：关闭成功后抹掉戳
+    conn.commit()
+finally:
+    conn.close()
+整票拒绝 = None
+try:
+    包 = json.loads((夹具目录 / "删戳再投准时样例.json").read_text(encoding="utf-8"))
+    装(包["事件"], 包["批次编号"])
+except 冻.缺戳异常 as e:
+    整票拒绝 = e
+断言(整票拒绝 is not None, "删戳后再投同窗准时包 → 缺戳异常，整票拒绝（乙口径此处会累加+续写审计）")
+w1x = 取窗(W1)
+断言(w1x["点赞合计"] == 7 and w1x["送礼合计"] == 50 and w1x["事件笔数"] == 3,
+     "整票回滚：W1 冻结合计保持 赞7/送50/笔3 不动（乙口径下会变成 赞11/送110/笔5）")
+conn = 连接()
+try:
+    断言(conn.execute("SELECT COUNT(*) c FROM 互动事件 WHERE 事件编号 IN ('Z1','Z2')").fetchone()["c"] == 0,
+         "整票回滚：被拒事件不留任何落账")
+    断言(conn.execute("SELECT COUNT(*) c FROM 关窗拒收 WHERE 窗键=?", (W1,)).fetchone()["c"] == 拒收前,
+         "整票回滚：不新增拒收证据（与乙口径强制续写审计相反的收口）")
+    断言(conn.execute("SELECT COUNT(*) c FROM 装载批次").fetchone()["c"] == 批次前,
+         "整票回滚：装载批次也不留票")
+    缺戳贯验 = 贯验.跑贯验()
+finally:
+    conn.close()
+断言(缺戳贯验["是否通过"] is False and any("冻结戳" in p for p in 缺戳贯验["问题"]),
+     "缺戳状态被贯验硬核对抓获（关闭成功而戳空）")
+conn = 连接()
+try:
+    conn.execute(
+        "INSERT INTO 发射冻结戳(窗键,关闭时刻,发射快照哈希,戳号,可否准时续写,时刻) VALUES (?,?,?,?,?,?)",
+        (存戳["窗键"], 存戳["关闭时刻"], 存戳["发射快照哈希"], 存戳["戳号"], 存戳["可否准时续写"], 存戳["时刻"]),
+    )
+    conn.commit()
+    _, 还原问题 = 冻.核证窗戳(conn, W1)
+finally:
+    conn.close()
+断言(not 还原问题, f"还原冻结戳后核证恢复通过（问题:{还原问题}）")
+
+print("幕3d 邻窗戳串用禁绝：重窗落戳失败、同号异窗落库失败、篡改即核证失配")
+conn = 连接()
+try:
+    try:
+        冻.落戳(conn, W1, 存戳["关闭时刻"], 存戳["发射快照哈希"])
+        重窗被拒 = False
+    except RuntimeError:
+        重窗被拒 = True
+    断言(重窗被拒, "同窗重复落戳被拒绝（关闭写闸幂等）")
+    try:
+        conn.execute(
+            "INSERT INTO 发射冻结戳(窗键,关闭时刻,发射快照哈希,戳号,可否准时续写,时刻) "
+            "VALUES ('房A|2099-01-01T00:00:00Z','x','h',?,0,'')",
+            (存戳["戳号"],),
+        )
+        同号被拒 = False
+    except sqlite3.IntegrityError:
+        同号被拒 = True
+    断言(同号被拒, "同一戳号落到邻窗被唯一约束拒绝（禁止邻窗戳串用）")
+    conn.rollback()
+    conn.execute("UPDATE 发射冻结戳 SET 发射快照哈希='篡改' WHERE 窗键=?", (W1,))
+    _, 篡改问题 = 冻.核证窗戳(conn, W1)
+    conn.rollback()
+finally:
+    conn.close()
+断言(any("失配" in p for p in 篡改问题), "篡改快照哈希即核证失配（戳不可挪作他用）")
+conn = 连接()
+try:
+    _, 复净 = 冻.核证窗戳(conn, W1)
+finally:
+    conn.close()
+断言(not 复净, "回滚篡改后 W1 戳核证恢复干净")
 
 print("幕3b 超允许迟到 → 旁路，不碰已关闭窗")
 装(
@@ -199,24 +290,28 @@ def 一轮并发(轮: int):
         w = conn.execute("SELECT * FROM 热度窗 WHERE 窗键=?", (wk,)).fetchone()
         f = conn.execute("SELECT * FROM 关窗发射 WHERE 窗键=?", (wk,)).fetchone()
         d = conn.execute("SELECT * FROM 互动事件 WHERE 事件编号=?", (f"D{轮}",)).fetchone()
+        戳 = conn.execute("SELECT * FROM 发射冻结戳 WHERE 窗键=?", (wk,)).fetchone()
         视图 = 发射服务.组装发射视图(conn, w)
-        return w, f, d, 视图
+        return w, f, d, 视图, 戳
     finally:
         conn.close()
 
 
 for 轮 in range(20):
     try:
-        w, f, d, 视图 = 一轮并发(轮)
+        w, f, d, 视图, 戳 = 一轮并发(轮)
     except Exception as e:
         撞错.append(repr(e))
         continue
     断言(w["状态"] in ("开启", "已关闭"), f"轮{轮}: 窗状态合法无脏态")
     if w["状态"] == "开启":
         断言(f is None, f"轮{轮}: 未关闭则无发射记录（无半截发射）")
+        断言(戳 is None, f"轮{轮}: 未关闭则无冻结戳（无半截落戳）")
         continue
     断言(f is not None and 视图["valid"] is True,
          f"轮{轮}: 已关闭必有发射且视图valid（无关闭态/合计分叉）")
+    断言(戳 is not None and 戳["戳号"] != "" and 戳["关闭时刻"] == w["关闭处理时"],
+         f"轮{轮}: 已关闭必同票有戳（无「标记在、戳空、累计已改」半截）")
     断言(w["点赞合计"] == f["快照点赞"] and w["事件笔数"] == f["快照笔数"],
          f"轮{轮}: 窗合计=发射快照，关闭态与合计不分叉")
     if d["命运"] == "已入窗":
@@ -268,6 +363,21 @@ print("幕7 窗互证全链通过")
 g = 贯验.跑贯验()
 断言(g["是否通过"] is True, f"窗互证通过（问题:{g['问题']}）")
 断言(g["关闭拒收数"] >= 2, "贯验统计含关闭拒收数")
+断言(g["冻结戳数"] >= 2, "贯验统计含冻结戳数")
+
+print("幕8 冻结戳核证只读接口（基线所无）：逐戳核证 + 甲口径标志")
+conn = 连接()
+try:
+    核全 = 冻.查冻结戳(conn)
+    核单 = 冻.查冻结戳(conn, W1)
+finally:
+    conn.close()
+断言(核全["写闸校验戳"] is True and 核全["可准时续写"] is False,
+     "核证接口宣告：写闸校验戳=True、可准时续写=False（甲·以戳号前置拒绝为准）")
+断言(核全["valid"] is True and not 核全["问题"], f"全库冻结戳核证通过（问题:{核全['问题']}）")
+断言(any(r["窗键"] == W1 and r["有效"] for r in 核全["冻结戳"]), "核证列表含 W1 有效冻结戳")
+断言(核单["valid"] is True and len(核单["冻结戳"]) == 1 and 核单["冻结戳"][0]["戳号"],
+     "单窗核证通过且戳号非空")
 
 print(f"\n结果：通过 {通过数} / 失败 {失败数}")
 sys.exit(1 if 失败数 else 0)

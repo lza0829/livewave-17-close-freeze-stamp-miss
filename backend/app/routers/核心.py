@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.db import 夹具目录, 连接
+from app.modules import 发射冻结戳 as 冻
 from app.services import 装载, 贯验, 目录, 关窗发射 as 发射服务
 
 路由 = APIRouter(prefix="/api")
@@ -180,11 +181,10 @@ def 空桩():
 
     return modules.列表()
 
-from app.modules import 发射冻结戳 as 冻
-
-
 @路由.get("/核证/冻结戳")
 def 取冻结戳(窗键: str | None = None):
+    """冻结戳核证只读接口（甲口径）：逐戳核证（窗键↔关闭时刻↔发射快照哈希↔戳号）、
+    缺戳/早戳/串用扫描，返回 写闸校验戳=true、可准时续写=false。"""
     conn = 连接()
     try:
         return 冻.查冻结戳(conn, 窗键)

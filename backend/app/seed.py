@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS 发射冻结戳 (
   可否准时续写 INTEGER NOT NULL DEFAULT 0,
   时刻 TEXT NOT NULL DEFAULT ''
 );
+CREATE UNIQUE INDEX IF NOT EXISTS 唯一冻结戳窗 ON 发射冻结戳(窗键);
+CREATE UNIQUE INDEX IF NOT EXISTS 唯一冻结戳号 ON 发射冻结戳(戳号);
 
 CREATE TABLE IF NOT EXISTS 站规 (
   键 TEXT PRIMARY KEY,
@@ -109,9 +111,17 @@ CREATE TABLE IF NOT EXISTS 关窗拒收 (
   处理时 TEXT NOT NULL,
   关闭处理时 TEXT NOT NULL,
   原因 TEXT NOT NULL,
+  戳号 TEXT NOT NULL DEFAULT '',
   时刻 TEXT NOT NULL
 );
 """
+
+
+def _确保列(conn, 表: str, 列: str, 定义: str) -> None:
+    """轻量迁移：老库缺列则补（CREATE IF NOT EXISTS 不会改老表）。"""
+    已有 = {r["name"] for r in conn.execute(f"PRAGMA table_info({表})")}
+    if 列 not in 已有:
+        conn.execute(f"ALTER TABLE {表} ADD COLUMN {列} {定义}")
 
 
 def 此刻() -> str:
@@ -121,6 +131,7 @@ def 此刻() -> str:
 def 初始化库() -> None:
     conn = 连接()
     conn.executescript(建表)
+    _确保列(conn, "关窗拒收", "戳号", "TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "INSERT INTO 站规(键, 值) VALUES (?, ?) "
         "ON CONFLICT(键) DO UPDATE SET 值=excluded.值",
@@ -135,6 +146,7 @@ def 初始化库() -> None:
             "关窗条件": "水位>=窗止即关闭发射",
             "旁路条件": "水位>=窗止+允许迟到",
             "关窗后准时事件": "拒收（关闭即冻结；仅显式迟到修正可改现行合计）",
+            "冻结戳口径": "关闭同票落戳（窗键/关闭时刻/发射快照哈希/戳号）；同窗准时写先核戳：戳有效→拒收留证，缺戳→整票拒绝；禁止邻窗戳串用",
             "骨架": "互动事件入流→事件时间水位线推进→热度窗关闭发射→迟到修正撤回→窗输出与撤回互证",
         }.items():
             conn.execute("INSERT INTO 站规(键, 值) VALUES (?, ?)", (k, v))
@@ -142,6 +154,7 @@ def 初始化库() -> None:
         for k, v in {
             "关窗条件": "水位>=窗止即关闭发射",
             "关窗后准时事件": "拒收（关闭即冻结；仅显式迟到修正可改现行合计）",
+            "冻结戳口径": "关闭同票落戳（窗键/关闭时刻/发射快照哈希/戳号）；同窗准时写先核戳：戳有效→拒收留证，缺戳→整票拒绝；禁止邻窗戳串用",
         }.items():
             conn.execute(
                 "INSERT INTO 站规(键, 值) VALUES (?, ?) "

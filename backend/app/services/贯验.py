@@ -1,18 +1,21 @@
 from app.db import 连接
+from app.modules import 发射冻结戳 as 冻
 from app.modules import 准时关窗发射 as 口径模块
 from app.seed import 此刻
 from app.services import 关窗发射 as 发射服务
 
 
 def 跑贯验() -> dict:
-    """窗输出与撤回/发射互证（口径甲·关闭即冻结）。
+    """窗输出与撤回/发射/冻结戳互证（口径甲·关闭即冻结）。
 
     硬核对：
     1. 已关闭窗的点赞/送礼/笔数 = 窗内已入窗事件合计；末次撤回新值与窗表一致；
     2. 每扇已关闭窗必须有关窗发射记录（无半截关窗），且发射口径为全局唯一甲口径；
     3. 发射快照 + 迟到修正净增量 = 现行合计（快照不被准时路径改写）；
     4. 关闭拒收事件不挂窗键、不计入任何窗合计，且处理时 <= 关闭处理时；
-    5. 旁路事件不得挂窗键。
+    5. 旁路事件不得挂窗键；
+    6. 每扇已关闭窗必须有有效冻结戳（禁止关闭成功而戳空）；开启窗不得有戳；
+       戳号全局唯一、不得邻窗串用；戳不得指向不存在的窗。
     """
     conn = 连接()
     try:
@@ -22,6 +25,7 @@ def 跑贯验() -> dict:
         撤回数 = conn.execute("SELECT COUNT(*) FROM 撤回单").fetchone()[0]
         旁路数 = conn.execute("SELECT COUNT(*) FROM 旁路匣").fetchone()[0]
         拒收数 = conn.execute("SELECT COUNT(*) FROM 关窗拒收").fetchone()[0]
+        戳数 = conn.execute("SELECT COUNT(*) FROM 发射冻结戳").fetchone()[0]
 
         for 窗 in 已关闭:
             agg = conn.execute(
@@ -74,8 +78,26 @@ def 跑贯验() -> dict:
         if 脏旁路:
             问题.append(f"旁路事件仍挂窗键:{脏旁路}")
 
+        早戳 = conn.execute(
+            "SELECT d.窗键 FROM 发射冻结戳 d JOIN 热度窗 w ON w.窗键=d.窗键 "
+            "WHERE w.状态!='已关闭'"
+        ).fetchall()
+        for r in 早戳:
+            问题.append(f"窗{r['窗键']}仍开启却已有冻结戳（半截落戳）")
+        孤儿戳 = conn.execute(
+            "SELECT d.窗键 FROM 发射冻结戳 d LEFT JOIN 热度窗 w ON w.窗键=d.窗键 "
+            "WHERE w.窗键 IS NULL"
+        ).fetchall()
+        for r in 孤儿戳:
+            问题.append(f"冻结戳指向不存在的窗:{r['窗键']}")
+        重号戳 = conn.execute(
+            "SELECT 戳号, COUNT(*) AS c FROM 发射冻结戳 GROUP BY 戳号 HAVING c>1"
+        ).fetchall()
+        for r in 重号戳:
+            问题.append(f"冻结戳号串用:{r['戳号']}x{r['c']}（禁止邻窗戳串用）")
+
         通过 = 1 if not 问题 else 0
-        说明 = "窗输出与事件/撤回/发射互证通过" if 通过 else "；".join(问题)[:800]
+        说明 = "窗输出与事件/撤回/发射/冻结戳互证通过" if 通过 else "；".join(问题)[:800]
         conn.execute(
             """INSERT INTO 窗贯验(时刻,事件数,已关闭窗数,撤回数,旁路数,是否通过,说明)
                VALUES (?,?,?,?,?,?,?)""",
@@ -89,6 +111,7 @@ def 跑贯验() -> dict:
             "撤回数": 撤回数,
             "旁路数": 旁路数,
             "关闭拒收数": 拒收数,
+            "冻结戳数": 戳数,
             "说明": 说明,
             "问题": 问题,
         }
