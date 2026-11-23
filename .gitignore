@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运行数据（SQLite 库，含 WAL/SHM）
+backend/app/data/
+/data/
+
+# Node / 前端构建
+node_modules/
+frontend/dist/
+
+# 临时与系统文件
+*.tmp
+.DS_Store
